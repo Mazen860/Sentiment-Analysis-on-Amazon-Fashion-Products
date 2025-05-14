@@ -1,0 +1,284 @@
+---
+title: "Untitled"
+author: "Mazen Alhaffar"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+set.seed(123)
+```
+
+
+
+```{r}
+
+library(car)
+library(leaps)
+library(olsrr)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(jsonlite)
+
+# Read the JSON file into R
+json_data <- stream_in(gzfile('/Users/junmi/Downloads/MSBA classes/BDA 622 - Marketing Analytics/project/AMAZON_FASHION_5.json.gz'))
+amazon <- json_data
+
+# filter for data we want
+amazon <- amazon %>% select(overall, reviewText)
+
+#  check for NAs
+sapply(amazon, function(x) which(is.na(x)))
+
+
+# get index of NAs
+index.nas <- which(is.na(amazon$reviewText))
+
+# remove the NAs
+amazon <- amazon[-index.nas,] 
+
+# double check to make sure we removed NAs
+sapply(amazon, function(x) which(is.na(x)))
+
+
+
+amazon$negative = as.factor(amazon$overall < 4)
+amazon$positive = as.factor(amazon$overall >= 4)
+
+library(dplyr)
+
+
+amazon$overall <- ifelse(amazon$overall >= 4, 'pos', 'neg')
+
+table(amazon$negative)
+
+# amazon$positive <- ifelse(amazon$overall >= 4, 'pos', 'neg')
+# amazon$negative <- amazon %>% filter(overall == "neg")
+
+```
+
+
+
+
+Partition data
+
+```{r}
+
+
+
+# Partition data into training (70%) and testing (30%) data sets
+
+# create a sample of indexes
+amazon.rows <- nrow(amazon)
+amazon.index <- sample(amazon.rows, .7*amazon.rows)
+
+# create datasets using above randomly chosen indexes
+amazon.train <- amazon[amazon.index,]
+amazon.test  <- amazon[-amazon.index,]
+
+# confirm the total number of rows matches the above
+nrow(amazon.test) + nrow(amazon.train)
+
+
+
+
+```
+
+Balance the datasset
+
+```{r}
+
+library(ROSE)
+
+
+amazon.train.balanced.over <- ovun.sample(negative ~ ., data=amazon.train, p=0.5, method= "over")
+amazon.train.balanced.over <- amazon.train.balanced.over$data
+
+
+# Save the balanced dataset
+
+amazon.train <- amazon.train.balanced.over
+(table(amazon.train.balanced.over$negative)) / nrow(amazon.train)
+
+
+```
+
+
+
+
+
+```{r}
+############# preprocess data #############
+library(tm)
+library(SnowballC)
+corpus = Corpus(VectorSource(amazon.train$reviewText)) # corpus is a standard for storing text data (it is a list of docs essentially)
+corpus[[1]]$content
+
+#convert all text to lowercase
+corpus = tm_map(corpus, tolower)
+corpus[[1]]$content
+```
+
+
+
+```{r}
+#remove all punctuation
+corpus = tm_map(corpus, removePunctuation)
+corpus[[1]]$content
+
+# remove the stop words
+corpus = tm_map(corpus, removeWords, c(stopwords("en")))
+corpus[[1]]$content
+
+# stem the document
+corpus = tm_map(corpus, stemDocument)
+corpus[[1]]$content
+```
+
+
+
+```{r}
+##### create Bag of the words #####
+word_count = DocumentTermMatrix(corpus)
+word_count
+findFreqTerms(word_count, lowfreq = 30)
+
+sparse = removeSparseTerms(word_count, .95)
+sparse
+
+# convert sparse matrix to a dataframe
+final_dataset = as.data.frame(as.matrix(sparse))
+final_dataset$negative = amazon.train$negative
+
+
+
+
+
+```
+
+
+
+```{r}
+model.text <- glm(negative ~ ., final_dataset, family = "binomial")
+summary(model.text)
+
+Predicted.text = predict(model.text, newdata = final_dataset)
+Predicted.text.class = ifelse(Predicted.text > 0.5,"TRUE","FALSE")
+
+library(caret)
+ConMatrix.text = confusionMatrix(as.factor(Predicted.text.class), final_dataset$negative)
+ConMatrix.text
+
+library(pROC)
+roc_curve.text = roc(response = final_dataset$negative, predictor = Predicted.text)
+roc_curve.text$auc
+
+
+plot(roc_curve.text)
+
+```
+
+
+
+## top 20 words
+
+
+```{r}
+
+library(tm)
+# Assuming 'dtm' is your Document-Term Matrix
+# Convert the Document-Term Matrix to a matrix
+word_matrix <- as.matrix(final_dataset[,-48])
+
+
+# Sum the occurrences of each word across all documents
+word_freq <- colSums(word_matrix)
+
+# Sort the words by frequency in descending order
+sorted_words <- sort(word_freq, decreasing = TRUE)
+
+# Display the top 20 words
+top_words <- head(sorted_words, 20)
+print(top_words)
+
+# Optional: Plot the top 20 words
+barplot(top_words, las = 2, col = "lightblue", main = "Top 20 Words", ylab = "Frequency")
+```
+
+
+## Better visual for top 20 words
+
+```{r}
+
+# Load required library
+library(ggplot2)
+
+# Create a data frame for the top 20 words
+top_words_df <- data.frame(
+  word = names(top_words),
+  freq = as.numeric(top_words)
+)
+
+# Plot the top 20 words with an enhanced color scheme
+ggplot(top_words_df, aes(x = reorder(word, freq), y = freq, fill = freq)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_gradient(low = "#FFDDC1", high = "#FF5733") + # Gradient color scheme
+  labs(
+    title = "Top 20 Words by Frequency",
+    x = "Words",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 16, face = "bold", hjust=0.5))
+
+```
+
+
+
+
+
+Initial,  30 freq, 95 sparsity Run:
+Frequency: 1125
+Sparcity: 39 terms
+Accuracy: .8386
+Sensitivty: .9655
+Specificity: .2410
+AUC:.8598
+
+
+2nd run, 30 freq, 90 sparsity Run:
+Frequency: 1125
+Sparcity: 16 terms
+Accuracy: .8323
+Sensitivty: .9948
+Specificity: .066
+AUC:.7792
+
+
+
+3nd run, 30 freq, 85 sparsity Run:
+Frequency: 1125
+Sparcity: 6 terms
+Accuracy: .8228
+Sensitivty: .9974
+Specificity: .0000
+AUC:.7371
+
+4th run, 30 freq, sparsity of 97
+Sparcity: 72 terms
+Accuracy : 0.9008 
+Sensitivity : 0.9719        
+Specificity : 0.5663 
+AUC: .9456
+
+
+We see that as we increase sparsity, we can increase the accuracy of the model, but the filtering becomes less and less strict, and the words filtered become more diverse. 
+
+in the eval, we will mention what we believe is the optimal level of sparcity without running into the problem of overfitting. 
+
